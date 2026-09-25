@@ -1,6 +1,7 @@
 #!/bin/bash
 # Uses a disposable CI Mac: installs, crashes, upgrades, and removes the real LaunchAgent.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "E2E failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 cd "$(dirname "$0")/.."
 [[ "$(uname -s)" == Darwin ]] || exit 1
 [[ "${CI:-}" == true ]] || { echo 'Run only on a disposable CI Mac (CI=true).' >&2; exit 1; }
@@ -27,8 +28,8 @@ wait_running() {
 sudo /usr/sbin/installer -pkg dist/ChargeBeep.pkg -target /
 wait_running
 [[ "$(stat -f '%Su:%Sg:%Lp' "/Library/LaunchAgents/$label.plist")" == 'root:wheel:644' ]]
-/usr/bin/lipo -verify_arch arm64 x86_64 "$cli"
-/usr/bin/lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/ChargeBeepUI"
+/usr/bin/lipo "$cli" -verify_arch arm64 x86_64
+/usr/bin/lipo "$app/Contents/MacOS/ChargeBeepUI" -verify_arch arm64 x86_64
 /usr/bin/codesign --verify --deep --strict "$app"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print LSUIElement' "$app/Contents/Info.plist")" == true ]]
 "$cli" status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["agent_running"] and s["autostart_installed"]'
