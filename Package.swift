@@ -10,8 +10,12 @@ let package = Package(
     ],
     targets: [
         .target(name: "ChargeBeepCore"),
+        .target(name: "ChargeBeepSettings", dependencies: ["ChargeBeepCore"]),
         .executableTarget(name: "ChargeBeep", dependencies: ["ChargeBeepCore"]),
-        .executableTarget(name: "ChargeBeepUI", dependencies: ["ChargeBeepCore"]),
-        .testTarget(name: "ChargeBeepCoreTests", dependencies: ["ChargeBeepCore"])
+        .executableTarget(name: "ChargeBeepUI", dependencies: ["ChargeBeepSettings"]),
+        .testTarget(name: "ChargeBeepCoreTests", dependencies: ["ChargeBeepCore"]),
+        .executableTarget(name: "ChargeBeepUITestDriver",
+                          dependencies: ["ChargeBeepCore", "ChargeBeepSettings"],
+                          path: "Tests/UITestDriver")
     ]
 )

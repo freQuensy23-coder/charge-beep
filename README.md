@@ -1,50 +1,60 @@
 # Charge Beep
 
-A native macOS battery alarm. No menu-bar item, Dock icon, web view, account, telemetry, or third-party runtime. The settings window and background monitor are separate processes.
+Low-battery alarm for macOS 13+, Intel and Apple Silicon.
 
 ## Install
-
-macOS 13 or later, Apple Silicon or Intel. After the first successful main-branch build publishes the release and cask:
 
 ```sh
 brew tap freQuensy23-coder/charge-beep https://github.com/freQuensy23-coder/charge-beep.git
 brew install --cask freQuensy23-coder/charge-beep/charge-beep
 ```
 
-The package requests an administrator password once per installation/upgrade. It installs `/Applications/Charge Beep.app`, `/usr/local/bin/charge-beep`, and a root-owned `/Library/LaunchAgents/io.github.frequensy23.charge-beep.plist`. No `brew services start` or manual login-item setup is needed. Existing GUI sessions are started immediately; future users start the agent at login. The CLI path works independently of which user owns Homebrew.
-
-The package is ad-hoc signed, **not Apple Developer ID signed/notarized**. It does not disable Gatekeeper or remove quarantine. macOS security policy can require approval or block unsigned distribution; do not interpret a failed installation as a running service. A source build on your Mac is available below. If macOS disables a background item, enable it in System Settings, General, Login Items. The installer does not override an explicit disable decision.
+Installation requests an administrator password. It installs a LaunchAgent in
+`/Library/LaunchAgents`, starts it in existing GUI sessions, and enables startup
+at login for every user. No menu-bar or Dock icon. Closing the settings window
+exits the UI without stopping the agent.
 
 ## Use
 
 ```sh
-charge-beep status                 # version, battery, settings, launchd PID/status
-charge-beep status --json
-charge-beep set threshold 3        # integer 1...100; default 1
+charge-beep status [--json]
+charge-beep set threshold 3
 charge-beep set enabled false
 charge-beep set enabled true
-charge-beep test                   # hear the actual alarm
-charge-beep ui                     # minimal native settings window
-charge-beep update                 # brew update, then brew upgrade --cask
+charge-beep test
+charge-beep ui
+charge-beep update
 ```
 
-The UI can also be opened from Applications or Spotlight. Closing it exits only the UI; the launchd-managed monitor continues. Settings are **per user**, stored atomically in `~/Library/Application Support/ChargeBeep/settings.json`. UI and CLI changes apply immediately to that user's running agent. `status` reports missing/stopped launchd jobs rather than assuming installation means the agent is running. Updating requires the Homebrew-owning user and administrator approval for the package.
+The window contains a threshold field, an enable switch, and a sound-test button.
+The default threshold is 1%; valid values are 1 through 100. Settings are per user
+at `~/Library/Application Support/ChargeBeep/settings.json`. CLI and UI changes
+apply immediately. `update` uses Homebrew and requires the Homebrew-owning user.
 
-## Alarm behavior
+While on battery at or below the threshold, the active console user's agent plays
+a two-pulse tone every 10 seconds. Connecting power, exceeding the threshold,
+switching away from the user, or disabling the alarm stops it. Missing or invalid
+battery readings do not trigger an alarm.
 
-At or below the threshold, while running on battery and in the active console user's session, a two-pulse tone sounds immediately and repeats every 10 seconds. Connecting power stops it even when macOS reports “not charging.” It stops above the threshold or when disabled. Unknown/missing/invalid batteries are not treated as 0%; UPS and peripheral batteries are ignored. With multiple logged-in users, only the active console user's agent can sound, using that user's settings.
+The alarm respects system volume, mute and the selected audio output. It cannot
+sound during sleep, before login, or after shutdown. At 1%, the battery may shut
+down before a warning; use a higher threshold for more margin.
 
-It respects the system output device, volume and mute; it does not force volume or bypass headphones. It cannot play while the Mac is asleep, powered off, or before anyone logs in. A 1% threshold leaves little margin before hardware shutdown: choose a higher threshold for more warning. It is a convenience alarm, not a guarantee against battery shutdown.
+The package is ad-hoc signed, not Apple-notarized. macOS may require approval or
+block installation. The installer does not bypass Gatekeeper or re-enable a
+background item that the user disabled. Check `charge-beep status` after install.
 
-## Architecture
+## Implementation
 
-Swift and Apple system frameworks only; zero package dependencies. The resident CLI/agent uses Foundation, IOKit, SystemConfiguration and AudioToolbox, **not AppKit**. AppKit loads only for the separate settings window. IOKit events update battery state; console-session events handle fast user switching; a directory file-system event source detects atomic settings changes. There is no periodic battery polling or idle alarm timer. A timer exists only while an alarm is active. `launchd` restarts a crashed agent. An advisory lock prevents duplicates; another lock serializes concurrent UI/CLI settings updates. Invalid settings preserve the running monitor's last valid settings and are reported rather than overwritten. No numerical CPU/RAM claims are made without device measurements.
-
-“All users” means a user-context LaunchAgent installed globally, **not** a root daemon attempting to use somebody else's audio session. No administrator privileges are used during monitoring or settings changes.
+Swift with Apple frameworks; no third-party dependencies. The agent uses IOKit
+battery events, console-session notifications, and file-system notifications.
+There is no periodic polling or timer while idle. Audio is allocated only during
+an alarm. AppKit runs in the separate UI process. `launchd` restarts a crashed
+agent. Settings writes are atomic and serialized across processes.
 
 ## Build and test
 
-Requires Xcode command-line tools and Python 3 on a development Mac. Nothing besides macOS is required by the installed application.
+On macOS with Xcode command-line tools and Python 3:
 
 ```sh
 swift test
@@ -53,30 +63,48 @@ bash scripts/build.sh 0.1.0
 sudo installer -pkg dist/ChargeBeep.pkg -target /
 ```
 
-`dist/` contains universal `.app.zip`, `.pkg`, and SHA-256 checksums. The app ZIP alone does not install the LaunchAgent; use the package for system-wide startup. The pure policy, settings and CLI tests also run on Linux with Swift installed.
+`dist/` contains the universal app ZIP, installer and checksums. The ZIP alone
+does not install the LaunchAgent.
 
-GitHub Actions runs on **every push and pull request**, testing on both Apple Silicon and Intel. It runs unit tests and real CLI/debug-agent subprocess tests, builds universal release binaries, installs the package on a disposable Mac, verifies root-owned autostart and service status, kills the daemon to check recovery, operates actual AppKit controls with a debug-only in-process driver and closes its window, verifies the agent survives, reinstalls the package to check restart/settings retention, and tests uninstallation. It also rejects battery-injection commands in production binaries. Battery transitions are simulated through the same production policy: CI cannot physically discharge a laptop, verify audible output, or reproduce a real multi-user desktop switch. The AppKit driver is not an external Accessibility/XCUITest robot.
+Unit tests cover threshold boundaries, timer behavior, cancellation, invalid
+battery readings, and settings persistence/rollback. CLI tests run separate
+processes and verify exit codes and serialized writes. The UI test driver lives
+under `Tests/`, uses the production window and application delegate, and checks
+external settings updates, active editing, controls and saving on close. No test
+commands or self-test code are shipped in the application.
 
-Only after **both** macOS jobs pass does a main push publish `v0.1.<workflow-run-number>` and update `Casks/charge-beep.rb` with its exact package checksum. Branch/PR builds are artifacts only. The generated cask commit uses `GITHUB_TOKEN`, which does not recursively trigger another workflow. Releasing needs the repository's Actions policy to permit the declared `contents: write` permission. No personal token or external publishing service is needed. Release binaries are never overwritten on reruns.
+Every push and pull request runs tests on Intel and Apple Silicon. CI also
+installs the package, verifies crash recovery and UI/service independence,
+reinstalls it, and tests Homebrew installation and removal. A main-branch push
+publishes a release and checksummed cask only after both jobs pass. UI screenshots
+and process measurements are attached to the CI run.
 
-To run the installer/lifecycle test manually, use **only a disposable Mac**; it installs and removes the application:
+The installer tests modify the system; run them only on a disposable Mac:
 
 ```sh
 CI=true bash scripts/e2e-macos.sh
+CI=true bash scripts/e2e-brew.sh 0.1.0
 ```
+
+CI does not physically discharge a battery, verify audible output, or perform a
+real multi-user desktop switch. The UI driver uses AppKit controls in-process,
+not an external Accessibility robot. RAM and CPU depend on the device; CI
+measurements are not performance guarantees.
 
 ## Uninstall
 
 ```sh
 brew uninstall --cask freQuensy23-coder/charge-beep/charge-beep
-# For a direct .pkg installation:
+```
+
+For a direct package installation:
+
+```sh
 sudo /bin/bash '/Applications/Charge Beep.app/Contents/Resources/uninstall.sh'
 ```
 
-Uninstall unloads every currently logged-in user's agent and removes global startup, the app, CLI link and package receipt. User settings are retained; `brew uninstall --zap --cask freQuensy23-coder/charge-beep/charge-beep` additionally removes the invoking user's settings.
-
-## References
-
-[Apple: launchd and global LaunchAgents](https://support.apple.com/guide/terminal/script-management-with-launchd-apdc6c1077b-5d5d-4d35-9c19-60f2397b2369/mac), [Homebrew cask packages](https://docs.brew.sh/Cask-Cookbook), [custom tap URLs](https://docs.brew.sh/Taps).
+Uninstallation stops logged-in users' agents and removes the application,
+LaunchAgent, CLI link and package receipt. User settings are retained. Homebrew's
+`--zap` option also removes the invoking user's settings.
 
 MIT license.

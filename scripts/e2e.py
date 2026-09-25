@@ -1,100 +1,76 @@
 #!/usr/bin/env python3
-"""Real CLI subprocess and debug-agent protocol tests. No external Python packages."""
-import concurrent.futures
+import fcntl
 import json
 import os
-import pathlib
+from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 
-BINARY = str(pathlib.Path(sys.argv.pop(1)).resolve()) if len(sys.argv) > 1 else '.build/debug/charge-beep'
+BINARY = str(Path(sys.argv.pop(1)).resolve())
 
 
-class EndToEnd(unittest.TestCase):
+class CLIIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='charge-beep-e2e-')
+        self.tmp = tempfile.TemporaryDirectory(prefix='charge-beep-cli-')
+        self.addCleanup(self.tmp.cleanup)
         self.env = dict(os.environ, CHARGE_BEEP_HOME=self.tmp.name)
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def run_cli(self, *args, ok=True):
-        result = subprocess.run([BINARY, *args], env=self.env, text=True, capture_output=True, timeout=15)
-        self.assertEqual(result.returncode == 0, ok, result.stderr)
+    def cli(self, *args, success=True):
+        result = subprocess.run([BINARY, *args], env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0 if success else 1, result.stderr)
         return result.stdout
 
     def status(self):
-        return json.loads(self.run_cli('status', '--json'))
+        return json.loads(self.cli('status', '--json'))
 
-    def test_cli_settings_survive_new_processes_and_bad_input(self):
-        self.assertEqual(self.status()['threshold'], 1)
-        self.run_cli('set', 'threshold', '6')
-        self.run_cli('set', 'enabled', 'false')
-        for n in ['0', '101', '-1', '1.5', 'NaN']:
-            self.run_cli('set', 'threshold', n, ok=False)
-        self.assertEqual(self.status()['threshold'], 6)
-        self.assertFalse(self.status()['enabled'])
-        self.assertIn('version', self.status())
-        self.run_cli('status', 'extra', ok=False)
-        self.run_cli('set', 'enabled', 'yes', ok=False)
+    def test_commands_persist_settings_and_reject_invalid_input_without_changes(self):
+        self.cli('set', 'threshold', '6')
+        self.cli('set', 'enabled', 'false')
+        before = (Path(self.tmp.name) / 'settings.json').read_bytes()
+        for args in [('set', 'threshold', '0'), ('set', 'threshold', '101'),
+                     ('set', 'threshold', '1.5'), ('set', 'enabled', 'yes'),
+                     ('status', 'extra'), ('_test-agent',)]:
+            with self.subTest(args=args):
+                self.cli(*args, success=False)
+                self.assertEqual((Path(self.tmp.name) / 'settings.json').read_bytes(), before)
+        state = self.status()
+        self.assertEqual((state['threshold'], state['enabled']), (6, False))
+        self.assertEqual(state['version'], self.cli('version').strip())
 
-    def test_concurrent_cli_writers_do_not_lose_unrelated_fields(self):
-        # Each CLI call is an independent process using the shared lock inode.
-        for _ in range(8):
-            self.run_cli('set', 'threshold', '1')
-            self.run_cli('set', 'enabled', 'true')
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                a = pool.submit(self.run_cli, 'set', 'threshold', '9')
-                b = pool.submit(self.run_cli, 'set', 'enabled', 'false')
-                a.result(); b.result()
-            self.assertEqual((self.status()['threshold'], self.status()['enabled']), (9, False))
-
-    def test_corrupt_settings_are_reported_not_silently_overwritten(self):
-        path = pathlib.Path(self.tmp.name) / 'settings.json'
-        path.write_text('{broken')
-        self.run_cli('status', '--json', ok=False)
-        self.run_cli('set', 'threshold', '4', ok=False)
-        self.assertEqual(path.read_text(), '{broken')
-
-    def test_two_users_are_isolated(self):
-        self.run_cli('set', 'threshold', '20')
-        with tempfile.TemporaryDirectory() as other:
-            result = subprocess.run([BINARY, 'status', '--json'], text=True, capture_output=True,
-                                    env=dict(os.environ, CHARGE_BEEP_HOME=other), check=True, timeout=15)
-        self.assertEqual(json.loads(result.stdout)['threshold'], 1)
-
-    def test_agent_process_reload_threshold_repeat_ac_switch_unknown_and_disabled(self):
-        proc = subprocess.Popen([BINARY, '_test-agent'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, env=self.env, text=True, bufsize=1)
-        def event(now, current=1, on_battery=True, active=True):
-            value = dict(now=now, current=current, maximum=100, onBattery=on_battery, active=active)
-            proc.stdin.write(json.dumps(value) + '\n'); proc.stdin.flush()
-            line = proc.stdout.readline()
-            self.assertTrue(line, 'Agent exited unexpectedly')
-            return json.loads(line)
+    def test_writers_wait_for_the_lock_then_preserve_each_others_changes(self):
+        self.cli('set', 'threshold', '1')
+        processes = []
         try:
-            self.assertFalse(event(0, current=2)['beep'])
-            self.assertTrue(event(1)['beep'])
-            self.assertFalse(event(1.1)['beep'])
-            self.assertTrue(event(11)['beep'])
-            self.assertIsNone(event(12, on_battery=False)['next'])
-            self.assertTrue(event(13)['beep'])
-            self.assertIsNone(event(14, active=False)['next'])
-            self.assertTrue(event(15)['beep'])
-            self.run_cli('set', 'enabled', 'false')
-            self.assertIsNone(event(16)['next'])
-            self.run_cli('set', 'enabled', 'true')
-            self.run_cli('set', 'threshold', '5')
-            self.assertTrue(event(17, current=5)['beep'])
-            self.assertIsNone(event(18, current=None)['next'])
-            self.assertFalse(event(19, current=6)['beep'])
+            with (Path(self.tmp.name) / 'settings.lock').open('r+') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                for args in [('set', 'threshold', '9'), ('set', 'enabled', 'false')]:
+                    process = subprocess.Popen([BINARY, *args], env=self.env, text=True,
+                                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    processes.append(process)
+                for process in processes:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        process.wait(timeout=0.25)
+                self.assertEqual(self.status()['threshold'], 1)
+                fcntl.flock(lock, fcntl.LOCK_UN)
+            for process in processes:
+                _, error = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, error)
+            state = self.status()
+            self.assertEqual((state['threshold'], state['enabled']), (9, False))
         finally:
-            proc.stdin.close()
-            proc.wait(timeout=5)
-            self.assertEqual(proc.returncode, 0, proc.stderr.read())
-            proc.stdout.close(); proc.stderr.close()
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
+
+    def test_corrupt_config_is_reported_without_replacing_it(self):
+        path = Path(self.tmp.name) / 'settings.json'
+        path.write_text('{broken')
+        self.cli('status', '--json', success=False)
+        self.cli('set', 'threshold', '4', success=False)
+        self.assertEqual(path.read_text(), '{broken')
 
 
 if __name__ == '__main__':

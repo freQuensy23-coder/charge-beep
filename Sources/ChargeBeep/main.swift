@@ -20,9 +20,6 @@ Settings apply to the current user. The installer enables background startup for
 
 func main() throws {
     let args = Array(CommandLine.arguments.dropFirst())
-    #if DEBUG
-    if args.first == "_test-agent" { try runTestAgent(Array(args.dropFirst())); return }
-    #endif
     let command = try Command.parse(args)
     let store = ConfigStore()
     switch command {

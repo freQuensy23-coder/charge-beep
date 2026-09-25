@@ -21,12 +21,16 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Check repository text
+        run: python3 scripts/check-text.py
       - name: Unit tests
         run: swift test
-      - name: CLI and alarm-process E2E
+      - name: CLI integration tests
         run: python3 scripts/e2e.py "$(swift build --show-bin-path)/charge-beep"
       - name: Build universal app and installer
-        run: bash scripts/build.sh "0.1.${{ github.run_number }}"
+        run: |
+          bash scripts/build.sh "0.1.${{ github.run_number }}"
+          git archive --format=tar -o dist/source.tar HEAD
       - name: Installed macOS service and UI E2E
         run: bash scripts/e2e-macos.sh
       - name: Homebrew install and uninstall E2E
@@ -44,6 +48,7 @@ jobs:
             dist/SHA256SUMS
             dist/UI.png
             dist/idle-process.txt
+            dist/source.tar
           if-no-files-found: error
 
   release:
@@ -61,22 +66,20 @@ jobs:
         with:
           name: ChargeBeep-macos-15
           path: dist
-      - name: Publish immutable binaries and checksummed Homebrew cask
+      - name: Publish binaries and checksummed Homebrew cask
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: 0.1.${{ github.run_number }}
         run: |
           set -euo pipefail
-          # Never publish an older source revision after somebody pushed a newer one.
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || { echo 'Newer main exists; skipping superseded release.'; exit 0; }
           tag="v$VERSION"
           if gh release view "$tag" >/dev/null 2>&1; then
-            # A rerun must retain the bytes (and checksum) of an already published release.
             gh release download "$tag" -p ChargeBeep.pkg -D dist --clobber
           else
             gh release create "$tag" dist/ChargeBeep.pkg dist/ChargeBeep.app.zip dist/SHA256SUMS \
               --target "$GITHUB_SHA" --title "Charge Beep $VERSION" \
-              --notes 'Universal macOS 13+ app. Both native architectures passed unit, CLI, alarm-process, installer, service lifecycle and AppKit window tests. Ad-hoc signed; not Apple-notarized. See README for Homebrew installation.'
+              --notes 'Universal macOS 13+ app. Intel and Apple Silicon tests passed: unit, CLI, installer, service lifecycle, UI editing and Homebrew. Ad-hoc signed; not Apple-notarized. See README for installation.'
           fi
           python3 scripts/cask.py "$VERSION" dist/ChargeBeep.pkg Casks/charge-beep.rb
           ruby -c Casks/charge-beep.rb
