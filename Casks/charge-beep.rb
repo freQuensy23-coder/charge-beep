@@ -1,6 +1,6 @@
 cask "charge-beep" do
-  version "0.1.3"
-  sha256 "66f6c055c73d1986abceae8ae16d1a94dbe312f3dde812ef12049449d90a85a3"
+  version "0.1.4"
+  sha256 "a190fe00a29ca6034227eaddc5cf44d9f12a2776618e366412bc734d3774a7b9"
 
   url "https://github.com/freQuensy23-coder/charge-beep/releases/download/v#{version}/ChargeBeep.pkg"
   name "Charge Beep"
