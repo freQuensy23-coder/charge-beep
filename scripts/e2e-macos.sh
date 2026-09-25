@@ -33,6 +33,7 @@ wait_running
 [[ "$(/usr/libexec/PlistBuddy -c 'Print LSUIElement' "$app/Contents/Info.plist")" == true ]]
 "$cli" status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["agent_running"] and s["autostart_installed"]'
 if "$cli" _test-agent; then echo 'Release exposes debug battery injection!' >&2; exit 1; fi
+"$cli" test
 before=$(pid)
 kill -KILL "$before"
 wait_running "$before"
@@ -48,6 +49,7 @@ done
 if kill -0 "$uipid" 2>/dev/null; then kill "$uipid"; echo 'UI failed to exit after closing its window.' >&2; exit 1; fi
 wait "$uipid"
 grep -q '^PASS:' "$scratch/ui-result"
+cp "$scratch/ui-result.png" dist/UI.png
 [[ "$(pid)" == "$after" ]]
 # Reinstall/upgrade must restart the service and retain preferences.
 "$cli" set threshold 4
@@ -56,6 +58,7 @@ wait_running "$after"
 "$cli" status --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["threshold"] == 4'
 # No spontaneous exits on a desktop/VM without an internal battery.
 stable=$(pid); sleep 3; [[ "$(pid)" == "$stable" ]]
+ps -o pid=,rss=,%cpu=,comm= -p "$stable" | tee dist/idle-process.txt
 sudo /bin/bash "$app/Contents/Resources/uninstall.sh"
 [[ ! -e "/Library/LaunchAgents/$label.plist" && ! -e "$app" && ! -L /usr/local/bin/charge-beep ]]
 if /bin/launchctl print "$domain" >/dev/null 2>&1; then echo 'Service survived uninstall.' >&2; exit 1; fi

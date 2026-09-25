@@ -64,7 +64,7 @@ func main() throws {
     case .agent:
         #if os(macOS)
         guard getuid() != 0 else { throw BeepError.message("Run as a user LaunchAgent, not as root.") }
-        let agent = try Agent()
+        let agent = Agent()
         try agent.start()
         withExtendedLifetime(agent) { RunLoop.main.run() }
         #else

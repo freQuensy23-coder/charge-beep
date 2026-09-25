@@ -127,6 +127,13 @@ final class SettingsApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
             guard try !store.load().enabled else { throw BeepError.message("Toggle did not persist") }
             enabled.performClick(nil)
             guard try store.load().enabled else { throw BeepError.message("Toggle did not re-enable") }
+            if let testResult, let view = window.contentView,
+               let image = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.layoutSubtreeIfNeeded()
+                view.cacheDisplay(in: view.bounds, to: image)
+                let screenshot = testResult.appendingPathExtension("png")
+                try image.representation(using: .png, properties: [:])?.write(to: screenshot)
+            }
             window.performClose(nil)
         } catch {
             if let testResult { try? Data("FAIL: \(error)".utf8).write(to: testResult) }

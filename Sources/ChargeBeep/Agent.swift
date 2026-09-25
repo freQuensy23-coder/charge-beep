@@ -9,14 +9,12 @@ final class Agent {
     private let store = ConfigStore()
     private var settings = Settings()
     private var alarm = Alarm()
-    private let beeper: Beeper
+    private var beeper: Beeper?
     private var lock: FileLock?
     private var watch: DirectoryWatch?
     private var powerSource: CFRunLoopSource?
     private var sessionStore: SCDynamicStore?
     private var timer: Timer?
-
-    init() throws { beeper = try Beeper() }
 
     func start() throws {
         try store.prepare()
@@ -31,11 +29,11 @@ final class Agent {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
 
         var sessionContext = SCDynamicStoreContext(version: 0, info: context, retain: nil, release: nil, copyDescription: nil)
+        let key = SCDynamicStoreKeyCreateConsoleUser(nil)
         guard let session = SCDynamicStoreCreate(nil, BuildInfo.label as CFString, { _, _, context in
             guard let context else { return }
             Unmanaged<Agent>.fromOpaque(context).takeUnretainedValue().refresh()
         }, &sessionContext),
-              let key = SCDynamicStoreKeyCreateConsoleUser(nil),
               SCDynamicStoreSetNotificationKeys(session, [key] as CFArray, nil),
               SCDynamicStoreSetDispatchQueue(session, .main) else {
             throw BeepError.message("Cannot subscribe to user-session changes.")
@@ -48,7 +46,13 @@ final class Agent {
         do { settings = try store.load() } catch { logError(error) }
         let now = ProcessInfo.processInfo.systemUptime
         if alarm.evaluate(battery: Mac.battery(), settings: settings,
-                          activeUser: Mac.isActiveUser(), now: now) { beeper.play() }
+                          activeUser: Mac.isActiveUser(), now: now) {
+            do {
+                if beeper == nil { beeper = try Beeper() }
+                beeper?.play()
+            } catch { logError(error) }
+        }
+        if alarm.nextBeep == nil { beeper = nil }
         timer?.invalidate()
         timer = nil
         if let deadline = alarm.nextBeep {
