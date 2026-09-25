@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+[[ "${3:-/}" == / ]] || exit 1
+label='io.github.frequensy23.charge-beep'
+plist="/Library/LaunchAgents/$label.plist"
+app='/Applications/Charge Beep.app'
+# Do not chown existing Homebrew directories.
+[[ -d /usr/local/bin ]] || /bin/mkdir -p /usr/local/bin
+/bin/ln -sfn "$app/Contents/MacOS/charge-beep" /usr/local/bin/charge-beep
+/usr/sbin/chown root:wheel "$plist"
+/bin/chmod 644 "$plist"
+failed=0
+while read -r name uid; do
+  [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 500 ]] || continue
+  if /bin/launchctl print "gui/$uid" >/dev/null 2>&1; then
+    # Never override an explicit user/macOS background-item disable decision.
+    if ! /bin/launchctl bootstrap "gui/$uid" "$plist"; then
+      echo "Cannot start Charge Beep for $name. Check System Settings > General > Login Items." >&2
+      failed=1
+    fi
+  fi
+done < <(/usr/bin/dscl . -list /Users UniqueID)
+exit "$failed"

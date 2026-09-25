@@ -1,0 +1,85 @@
+name: Build, test and release
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: charge-beep-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: swift test
+      - name: CLI and alarm-process E2E
+        run: python3 scripts/e2e.py "$(swift build --show-bin-path)/charge-beep"
+      - name: Build universal app and installer
+        run: bash scripts/build.sh "0.1.${{ github.run_number }}"
+      - name: Installed macOS service and UI E2E
+        run: bash scripts/e2e-macos.sh
+      - name: Validate generated Homebrew cask
+        run: |
+          python3 scripts/cask.py "0.1.${{ github.run_number }}" dist/ChargeBeep.pkg dist/charge-beep.rb
+          ruby -c dist/charge-beep.rb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChargeBeep-${{ matrix.os }}
+          path: |
+            dist/ChargeBeep.pkg
+            dist/ChargeBeep.app.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: ChargeBeep-macos-15
+          path: dist
+      - name: Publish immutable binaries and checksummed Homebrew cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          # Never publish an older source revision after somebody pushed a newer one.
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || { echo 'Newer main exists; skipping superseded release.'; exit 0; }
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # A rerun must retain the bytes (and checksum) of an already published release.
+            gh release download "$tag" -p ChargeBeep.pkg -D dist --clobber
+          else
+            gh release create "$tag" dist/ChargeBeep.pkg dist/ChargeBeep.app.zip dist/SHA256SUMS \
+              --target "$GITHUB_SHA" --title "Charge Beep $VERSION" \
+              --notes 'Universal macOS 13+ app. Both native architectures passed unit, CLI, alarm-process, installer, service lifecycle and AppKit window tests. Ad-hoc signed; not Apple-notarized. See README for Homebrew installation.'
+          fi
+          python3 scripts/cask.py "$VERSION" dist/ChargeBeep.pkg Casks/charge-beep.rb
+          ruby -c Casks/charge-beep.rb
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Casks/charge-beep.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish Homebrew cask $VERSION"
+            git push origin HEAD:main
+          fi
